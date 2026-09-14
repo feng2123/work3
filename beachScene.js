@@ -68,10 +68,10 @@ const wind = { time: 0, strength: 0.05, speed: 0.6 }
 // ===================== 纹理加载工具 =====================
 function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   const tex = textureLoader.load(
-    `/texture/${path}`,
-    () => console.log(`✅ 沙滩贴图加载: /texture/${path}`),
+    `texture/${path}`,
+    () => console.log(`✅ 沙滩贴图加载: texture/${path}`),
     undefined,
-    () => console.warn(`❌ 沙滩贴图缺失: /texture/${path}`)
+    () => console.warn(`❌ 沙滩贴图缺失: texture/${path}`)
   )
   if (tex) {
     tex.wrapS = THREE.RepeatWrapping
@@ -95,6 +95,7 @@ const barkRoughTex = createTex('Bark012_1K-JPG/Bark012_1K-JPG_Roughness.jpg', 3,
 const sandgroundColorTex = createTex('Ground080_1K-JPG/Ground080_1K-JPG_Color.jpg', 30, 30)
 const sandgroundRoughTex = createTex('Ground080_1K-JPG/Ground080_1K-JPG_Roughness.jpg', 30, 30)
 const sandgroundNormalDXTex = createTex('Ground080_1K-JPG/Ground080_1K-JPG_NormalDX.jpg', 30, 30, true)
+
 // 云朵、镜头光晕在线贴图
 const cloudTex = textureLoader.load('https://threejs.org/examples/textures/lensflare/cloud.png')
 const flareTex0 = textureLoader.load('https://threejs.org/examples/textures/lensflare/lensflare0.png')

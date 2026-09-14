@@ -80,10 +80,10 @@ const FOREST_CONFIG = {
 // ===================== 纹理加载工具 =====================
 function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   const tex = textureLoader.load(
-    `/texture/${path}`,
-    () => console.log(`✅ 贴图加载成功: /texture/${path}`),
+    `texture/${path}`,
+    () => console.log(`✅ 贴图加载成功: texture/${path}`),
     undefined,
-    () => console.warn(`❌ 贴图缺失 404: /texture/${path}，自动使用纯色`)
+    () => console.warn(`❌ 贴图缺失 404: texture/${path}，自动使用纯色`)
   )
   if (tex) {
     tex.wrapS = THREE.RepeatWrapping
@@ -98,7 +98,6 @@ function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   }
   return tex
 }
-
 // ========== 场景纹理资源 ==========
 const groundColorTex = createTex('Ground037_1K-JPG/Ground037_1K-JPG_Color.jpg', 30, 30)
 const groundRoughTex = createTex('Ground037_1K-JPG/Ground037_1K-JPG_Roughness.jpg', 30, 30)
@@ -113,7 +112,7 @@ const rockRoughTex2 = createTex('Rock051_1K-JPG/Rock051_1K-JPG_Roughness.jpg', 2
 const rockNormalDXTex2 = createTex('Rock051_1K-JPG/Rock051_1K-JPG_NormalDX.jpg', 2, 2, true)
 const leafColorTex = new THREE.TextureLoader();
 const texture2 = leafColorTex.load(
-  'public/leaf.png',
+  'leaf.png',
   () => console.log("树叶纹理加载成功"),
   undefined,
   (err) => console.error("树叶贴图加载失败：", err)

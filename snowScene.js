@@ -56,10 +56,10 @@ const wind = { time: 0, strength: 0.03, speed: 0.5 }
 // ===================== 纹理加载工具 =====================
 function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   const tex = textureLoader.load(
-    `/texture/${path}`,
-    () => console.log(`✅ 雪原贴图加载: /texture/${path}`),
+    `texture/${path}`,
+    () => console.log(`✅ 雪原贴图加载: texture/${path}`),
     undefined,
-    () => console.warn(`❌ 雪原贴图缺失: /texture/${path}`)
+    () => console.warn(`❌ 雪原贴图缺失: texture/${path}`)
   )
   if (tex) {
     tex.wrapS = THREE.RepeatWrapping
@@ -74,7 +74,6 @@ function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   }
   return tex
 }
-
 // 复用岩石与树皮纹理
 const rockColorTex = createTex('Rock060_1K-JPG/Rock060_1K-JPG_Color.jpg', 2, 2)
 const rockRoughTex = createTex('Rock060_1K-JPG/Rock060_1K-JPG_Roughness.jpg', 2, 2)
