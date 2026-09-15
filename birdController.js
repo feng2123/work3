@@ -3,8 +3,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import * as CANNON from 'cannon-es'
 /**
  * 创建可骑乘车辆控制器（人物 / 车 切换操控）。
- * 适配BMW X3中文命名：轮胎、轮毂、车门。
- * 新增：上车前开门、下车开门延时逻辑
+ * 适配BMW X3中文命名轮胎：前胎右、前胎左、后胎右、后胎左
+ * 控制器负责车模型加载、移动、车轮旋转、相机跟随与边界传送。
  *
  * @param {object} cfg
  * @param {THREE.Scene} cfg.scene
@@ -37,15 +37,10 @@ export function createBirdController({
   let birdMixer = null
   let birdMode = false
 
+  // 保存轮胎+轮毂对象
   let wheels = []
-  let doors = [] // 保存车门对象
-  let doorOpenAngle = 0 // 车门当前旋转角度
-  const doorMaxAngle = Math.PI / 2.2 // 车门最大打开角度
-  let doorAnimTimer = 0
-  let doorAnimState = 'closed' // closed / opening / open / closing
-  let waitingEnter = false // 是否等待开门完成再上车
 
-  // ---------- 加载车辆模型（阴影 + 轮胎 + 车门） ----------
+  // ---------- 加载车辆模型（阴影 + 匹配中文轮胎名称） ----------
   function create() {
     const loader = new GLTFLoader()
     loader.load(
@@ -56,14 +51,14 @@ export function createBirdController({
         birdModel.scale.multiplyScalar(1.2)
         birdModel.rotation.y = 0
 
-        // 遍历模型子物体
+        // 遍历模型子物体，开启阴影，收集轮胎、轮毂
         birdModel.traverse((child) => {
           if(child.isMesh && child.material) {
-            // 阴影
+            // 开启投射阴影，接收阴影
             child.castShadow = true;
             child.receiveShadow = true;
 
-            // 贴图色彩修复
+            // 修复贴图色彩空间，防止贴图发黑
             if(Array.isArray(child.material)){
               child.material.forEach(mat=>{
                 if(mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
@@ -72,13 +67,9 @@ export function createBirdController({
               if(child.material.map) child.material.map.colorSpace = THREE.SRGBColorSpace
             }
 
-            // 收集轮胎轮毂
+            // ✅ 匹配中文名称：带【胎】或者【轮毂】的物体全部加入车轮数组
             if(child.name.includes('胎') || child.name.includes('轮毂')){
               wheels.push(child)
-            }
-            // ✅ 收集车门（名字带【门】）
-            if(child.name.includes('门')){
-              doors.push(child)
             }
           }
         })
@@ -99,98 +90,34 @@ export function createBirdController({
     )
   }
 
-  // 开门/关门动画更新
-  function updateDoorAnimation(delta) {
-    const doorSpeed = 1.8
-    if(doorAnimState === 'opening'){
-      doorOpenAngle += delta * doorSpeed
-      if(doorOpenAngle >= doorMaxAngle){
-        doorOpenAngle = doorMaxAngle
-        doorAnimState = 'open'
-      }
-      doors.forEach(door=>{
-        door.rotation.y = doorOpenAngle
-      })
-    }
-    if(doorAnimState === 'closing'){
-      doorOpenAngle -= delta * doorSpeed
-      if(doorOpenAngle <= 0){
-        doorOpenAngle = 0
-        doorAnimState = 'closed'
-      }
-      doors.forEach(door=>{
-        door.rotation.y = doorOpenAngle
-      })
-    }
-  }
-
-  // ---------- 切换人物 / 车（修改为开门延时上车） ----------
+  // ---------- 切换人物 / 车 操控 ----------
   function toggleMode() {
     if (!birdMesh) return
-    // 如果正在播放车门动画，直接return，防止重复触发
-    if(doorAnimState === 'opening' || doorAnimState === 'closing') return
-
     const playerMesh = getPlayerMesh()
     const playerBody = getPlayerBody()
-
     if (!birdMode) {
-      // 人 → 上车：先开门，等待开门完成再进入车内
-      if(doorAnimState === 'closed'){
-        doorAnimState = 'opening'
-        waitingEnter = true
-        doorAnimTimer = 0
-      }
+      // 人 → 上车
+      playerMesh.visible = false
+      const p = playerBody.position
+      birdMesh.position.set(p.x, getTerrainHeight(p.x, p.z) + flyHeight, p.z)
+      birdMesh.rotation.y = playerMesh.rotation.y
+      birdMode = true
     } else {
-      // 下车：开门，延时之后把人物放出来
-      if(doorAnimState === 'closed'){
-        doorAnimState = 'opening'
-        waitingEnter = true
-        doorAnimTimer = 0
-      }
+      // 下车 → 人
+      const b = birdMesh.position
+      const terrainY = getTerrainHeight(b.x, b.z)
+      playerBody.position.set(b.x, terrainY + 0.4, b.z)
+      playerBody.velocity.set(0, 0, 0)
+      playerMesh.position.copy(playerBody.position)
+      playerMesh.position.y += 0.2
+      playerMesh.visible = true
+      birdMode = false
     }
   }
 
-  // ---------- 车的移动 + 车轮旋转 + 车门动画 + 相机 ----------
+  // ---------- 车的移动 + 车轮旋转 + 相机 ----------
   function update(delta) {
     if (!birdMesh) return
-    // 更新车门动画
-    updateDoorAnimation(delta)
-
-    // 开门完成后等待一小段时间，执行上车/下车
-    if(waitingEnter && doorAnimState === 'open'){
-      doorAnimTimer += delta
-      // 开门后等待0.4秒，再上车
-      if(doorAnimTimer > 0.4){
-        waitingEnter = false
-        if(!birdMode){
-          // 执行上车
-          const p = playerBody.position
-          playerMesh.visible = false
-          birdMesh.position.set(p.x, getTerrainHeight(p.x, p.z) + flyHeight, p.z)
-          birdMesh.rotation.y = playerMesh.rotation.y
-          birdMode = true
-          // 上车之后关门
-          setTimeout(()=>{
-            doorAnimState = 'closing'
-          },600)
-        }else{
-          // 执行下车
-          const b = birdMesh.position
-          const terrainY = getTerrainHeight(b.x, b.z)
-          playerBody.position.set(b.x, terrainY + 0.4, b.z)
-          playerBody.velocity.set(0, 0, 0)
-          playerMesh.position.copy(playerBody.position)
-          playerMesh.position.y += 0.2
-          playerMesh.visible = true
-          birdMode = false
-          // 下车完成关门
-          setTimeout(()=>{
-            doorAnimState = 'closing'
-          },600)
-        }
-      }
-    }
-
     const yaw = getCameraYaw()
     const moveSpeed = playerKeys.shift ? 20 : 12
     const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw))
@@ -216,9 +143,9 @@ export function createBirdController({
       birdMesh.rotation.y += diff * 0.25
     }
 
-    // 轮胎轮毂旋转
+    // ✅ 轮胎轮毂同步旋转，速度系数 2.2，可自行微调
     if(wheels.length > 0){
-      const wheelRotateSpeed = len * delta * 2.2
+      const wheelRotateSpeed = len * delta * 10
       for(const w of wheels){
         w.rotation.x += wheelRotateSpeed
       }
@@ -255,7 +182,6 @@ export function createBirdController({
     birdMixer = null
     birdMode = false
     wheels = []
-    doors = []
   }
 
   function isBirdMode() { return birdMode }
