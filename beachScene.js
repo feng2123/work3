@@ -1059,7 +1059,7 @@ function createFishingRod() {
   float.position.set(0, 1.85, 0)
   group.add(float)
   // 挂在右手位置
-  group.position.set(0.45, 0.8, 0)
+  group.position.set(0.45, 0.8, 0.3)
   group.rotation.z = -0.5
   group.visible = false
   return group
@@ -1129,8 +1129,8 @@ function updateBuoyPosition() {
   // 浮标放在玩家面朝方向前方约 4 米的水面上
   const dirX = -Math.sin(playerMesh.rotation.y)
   const dirZ = -Math.cos(playerMesh.rotation.y)
-  const bx = p.x + dirX * 4
-  const bz = p.z + dirZ * 4
+  const bx = p.x - dirX * 4
+  const bz = p.z - dirZ * 4
   const bob = Math.sin(performance.now() * 0.003) * 0.06
   fishingBuoy.position.set(bx, WATER_LEVEL + bob, bz)
 }
