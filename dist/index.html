@@ -3,30 +3,373 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>旅行Demo - 森林 · 沙滩 · 雪原</title>
+  <title>旅游模拟器 - 森林 · 沙滩 · 雪原</title>
   <style>
     * {
       margin: 0;
       padding: 0;
+      box-sizing: border-box;
     }
     canvas {
       display: block;
     }
-    #ui {
+    body {
+      font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    /* ===================== 封面 ===================== */
+    #cover {
       position: fixed;
-      top: 12px;
-      left: 12px;
+      inset: 0;
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(160deg, #0b1a33 0%, #123a5c 42%, #1d6a7a 72%, #2a8f8a 100%);
+      transition: opacity 0.6s ease;
+    }
+    #cover.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #cover::before,
+    #cover::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(40px);
+      opacity: 0.55;
+    }
+    #cover::before {
+      width: 46vmax;
+      height: 46vmax;
+      left: -12vmax;
+      top: -10vmax;
+      background: radial-gradient(circle, rgba(255, 190, 90, 0.5), transparent 65%);
+    }
+    #cover::after {
+      width: 40vmax;
+      height: 40vmax;
+      right: -10vmax;
+      bottom: -12vmax;
+      background: radial-gradient(circle, rgba(120, 210, 255, 0.42), transparent 65%);
+    }
+    .cover-card {
+      position: relative;
+      text-align: center;
       color: #fff;
-      font-size: 18px;
-      font-family: sans-serif;
-      text-shadow: 1px 1px 4px #000;
-      z-index: 99;
+      padding: 48px 56px;
+      border-radius: 24px;
+      background: rgba(10, 24, 42, 0.42);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      animation: cover-in 0.8s ease both;
+    }
+    @keyframes cover-in {
+      from { transform: translateY(26px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .cover-card h1 {
+      font-size: 52px;
+      font-weight: 800;
+      letter-spacing: 6px;
+      background: linear-gradient(180deg, #fff 30%, #ffd9a0 90%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 4px 30px rgba(255, 190, 90, 0.25);
+    }
+    .cover-card .subtitle {
+      margin-top: 12px;
+      font-size: 16px;
+      letter-spacing: 4px;
+      color: rgba(255, 255, 255, 0.78);
+    }
+    .cover-card .route {
+      margin-top: 6px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.5);
+      letter-spacing: 2px;
+    }
+    .volume-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin: 34px 0 30px;
+      font-size: 15px;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .volume-row .icon {
+      font-size: 20px;
+    }
+    .volume-row input[type="range"] {
+      width: 220px;
+      height: 6px;
+      border-radius: 3px;
+      appearance: none;
+      -webkit-appearance: none;
+      background: linear-gradient(90deg, #4fc3f7, #a8e6ff);
+      outline: none;
+      cursor: pointer;
+    }
+    .volume-row input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid #4fc3f7;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      cursor: pointer;
+    }
+    .volume-row input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid #4fc3f7;
+      cursor: pointer;
+    }
+    .volume-row .pct {
+      min-width: 44px;
+      font-variant-numeric: tabular-nums;
+      color: #ffe0b0;
+    }
+    #start-btn {
+      display: inline-block;
+      padding: 16px 68px;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 6px;
+      color: #10314a;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      background: linear-gradient(135deg, #ffe29a 0%, #ffb66b 60%, #ff9d5c 100%);
+      box-shadow: 0 10px 34px rgba(255, 170, 90, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+    #start-btn:hover {
+      transform: translateY(-2px) scale(1.03);
+      box-shadow: 0 16px 44px rgba(255, 170, 90, 0.6);
+    }
+    #start-btn:active {
+      transform: translateY(0) scale(0.98);
+    }
+
+    /* ===================== 天气栏（右上） ===================== */
+    #weather-bar {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(16, 22, 34, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.25);
+    }
+    #phase-badge {
+      font-size: 13px;
+      color: #ffe0b0;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .weather-btn {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.72);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      user-select: none;
+    }
+    .weather-btn:hover {
+      background: rgba(255, 255, 255, 0.14);
+      color: #fff;
+    }
+    .weather-btn.active {
+      background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+      border-color: rgba(255, 255, 255, 0.35);
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(41, 182, 246, 0.4);
+    }
+    .weather-btn[hidden] {
+      display: none;
+    }
+
+    /* ===================== 操作指南（右下） ===================== */
+    #help-panel {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 1000;
+      width: 230px;
+      border-radius: 14px;
+      background: rgba(16, 22, 34, 0.52);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+      transition: width 0.25s ease;
+    }
+    #help-panel.collapsed .help-body {
+      display: none;
+    }
+    #help-panel.collapsed {
+      width: 150px;
+    }
+    .help-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #e8f3ff;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.05);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .help-title .toggle {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.55);
+      font-weight: 400;
+      transition: transform 0.2s ease;
+    }
+    #help-panel.collapsed .toggle {
+      transform: rotate(-90deg);
+    }
+    .help-body {
+      padding: 8px 4px;
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.88);
+      line-height: 2;
+    }
+    .help-body .row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 3px 14px;
+    }
+    .help-body .key {
+      display: inline-block;
+      min-width: 46px;
+      padding: 1px 8px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: #ffe0b0;
+      background: rgba(255, 255, 255, 0.09);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 6px;
+    }
+    .help-body .desc {
+      flex: 1;
+    }
+
+    /* ===================== 可交互提示（屏幕右方） ===================== */
+    #interact-hint {
+      position: fixed;
+      right: 20px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 900;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    #interact-hint.hidden {
+      opacity: 0;
+      transform: translateY(-50%) translateX(18px);
+    }
+    #interact-hint .hint-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: rgba(16, 22, 34, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+      color: #fff;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    #interact-hint .hint-key {
+      min-width: 34px;
+      text-align: center;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #ffe0b0;
+      font-weight: 700;
+      font-size: 13px;
     }
   </style>
-  <script type="module" crossorigin src="/work3/assets/index-Ce7nSl2Y.js"></script>
+  <script type="module" crossorigin src="/work3/assets/index-BsuSyV5Y.js"></script>
 </head>
 <body>
-  
-  <!-- 唯一JS引入，必须加 type="module" -->
+
+  <!-- 封面：标题 + 音量设置 + 开始键 -->
+  <div id="cover">
+    <div class="cover-card">
+      <h1>旅游模拟器</h1>
+      <div class="subtitle">自驾环游 · 四季风光</div>
+      <div class="route">🌲 森林 &nbsp;·&nbsp; 🏖️ 沙滩 &nbsp;·&nbsp; ❄️ 雪原</div>
+      <div class="volume-row">
+        <span class="icon">🔊</span>
+        <input type="range" id="volume-slider" min="0" max="100" value="25" />
+        <span class="pct" id="volume-pct">25%</span>
+      </div>
+      <button id="start-btn">开 始 旅 程</button>
+    </div>
+  </div>
+
+  <!-- 天气调整 + 自动时段指示 -->
+  <div id="weather-bar">
+    <span id="phase-badge">☀️ 白天</span>
+    <button class="weather-btn active" data-weather="sunny">☀️ 晴</button>
+    <button class="weather-btn" data-weather="rainy">🌧️ 雨</button>
+    <button class="weather-btn" data-weather="snowy">❄️ 雪</button>
+  </div>
+
+  <!-- 操作介绍 -->
+  <div id="help-panel">
+    <div class="help-title">操作指南 <span class="toggle">▾</span></div>
+    <div class="help-body">
+      <div class="row"><span class="key">W A S D</span><span class="desc">移动 / 驾驶</span></div>
+      <div class="row"><span class="key">Shift</span><span class="desc">加速奔跑 / 行车</span></div>
+      <div class="row"><span class="key">E</span><span class="desc">上下车 / 互动</span></div>
+      <div class="row"><span class="key">F</span><span class="desc">取零件 / 搭建 / 滚雪球</span></div>
+      <div class="row"><span class="key">V</span><span class="desc">自由视角开关</span></div>
+      <div class="row"><span class="key">边缘</span><span class="desc">到达地图边界自动换图</span></div>
+    </div>
+  </div>
+
+  <!-- 唯一JS引入，必须加 type="module" -->
 </body>
 </html>

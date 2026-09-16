@@ -7,8 +7,11 @@ import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js'
 import { Water } from 'three/addons/objects/Water.js'
 import { Sky } from 'three/addons/objects/Sky.js'
 import * as CANNON from 'cannon-es'
-import { setActiveScene, createMoon } from './envManager.js'
-import { createBirdController } from './birdController.js'
+import { setActiveScene, createMoon, computeDaylight } from './envManager.js'
+import { createCarController } from './carController.js'
+import { createBackpack, createSpotMarker, createBeachChairModel, findClearSpots, updateMarkerPulse } from './buildables.js'
+import { showHint, hideHint } from './interactHud.js'
+import { playMusic, stopMusic } from './musicManager.js'
 // ===================== 沙滩场景配置 =====================
 const BEACH_CONFIG = {
   groundSize: 300,        // 沙滩大小
@@ -44,11 +47,18 @@ let water, sky, waterTime = 0
 let sandMesh
 let rainPoints = null
 let moon = null
-let birdController = null
+let carController = null
 // 钓鱼交互
 let isFishing = false
 let fishingRod = null
 let fishingBuoy = null
+// —— 沙滩椅系统 ——
+let chairParts = false         // 是否已取出沙滩椅零件
+let chairBackpack = null       // 背上的沙滩椅背包
+let chairSpots = []            // 海边搭建点 {x, z, y, marker}
+let beachChair = null          // 已搭建沙滩椅 {group, seatX, seatY, seatZ}
+let onChair = false            // 玩家是否坐在椅上
+let chairSeatRef = null        // 椅座引用（移动起身用）
 const palmTrees = []
 const cloudGroups = []
 const boats = []
@@ -153,58 +163,36 @@ function updateRainParticles() {
 // ===================== 环境应用（昼夜 / 晴雨） =====================
 function applyEnvironment(state) {
   if (!scene || !renderer) return
-  const isNight = state.time === 'night'
+  const dl = computeDaylight(state.timeProgress)
   const isRainy = state.weather === 'rainy'
 
-  // —— 昼夜 ——
-  if (isNight) {
-    // 夜空：太阳落到地平线以下
-    if (sky) {
-      const skyU = sky.material.uniforms
-      skyU['sunPosition'].value.set(0, -0.6, 0.4)
-      skyU['turbidity'].value = 8
-      skyU['rayleigh'].value = 0.3
-      skyU['mieCoefficient'].value = 0.01
-    }
-    scene.fog.color.set(0x0a1020)
-    ambientLight.color.set(0x334466)
-    ambientLight.intensity = 0.32
-    hemiLight.color.set(0x334466)
-    hemiLight.groundColor.set(0x1a2030)
-    hemiLight.intensity = 0.3
-    sunLight.color.set(0x6688bb)
-    sunLight.intensity = 0.2
-    renderer.toneMappingExposure = 0.5
-    // 开启月亮发光 + 月光照明
-    if (moon) { moon.mesh.visible = true; moon.light.visible = true }
-    if (water) {
-      water.material.uniforms['waterColor'].value.set(0x001828)
-      water.material.uniforms['sunColor'].value.set(0x334466)
-    }
-  } else {
-    if (sky) {
-      const sunDir = BEACH_CONFIG.sunPos.clone().normalize()
-      const skyU = sky.material.uniforms
-      skyU['sunPosition'].value.copy(sunDir)
-      skyU['turbidity'].value = 3.2
-      skyU['rayleigh'].value = 0.9
-      skyU['mieCoefficient'].value = 0.003
-      skyU['mieDirectionalG'].value = 0.75
-    }
-    scene.fog.color.set(0xb8d0e0)
-    ambientLight.color.set(0xfaf0d8)
-    ambientLight.intensity = 0.85
-    hemiLight.color.set(0x88ccff)
-    hemiLight.groundColor.set(0xffddaa)
-    hemiLight.intensity = 0.65
-    sunLight.color.set(BEACH_CONFIG.sunColor)
-    sunLight.intensity = BEACH_CONFIG.sunIntensity * 0.7
-    renderer.toneMappingExposure = 0.6
-    if (moon) { moon.mesh.visible = false; moon.light.visible = false }
-    if (water) {
-      water.material.uniforms['waterColor'].value.set(BEACH_CONFIG.waterColor)
-      water.material.uniforms['sunColor'].value.set(BEACH_CONFIG.sunWaterColor)
-    }
+  // —— 自动昼夜：日出/白天/日落/黑夜连续插值 ——
+  if (sky) {
+    const skyU = sky.material.uniforms
+    // 太阳随光照因子升降：夜里落到地平线下，白天高悬
+    skyU['sunPosition'].value.set(0.5, -0.6 + 1.5 * dl.sunFactor, 0.8)
+    skyU['turbidity'].value = 2 + 2.2 * (1 - dl.sunFactor)
+    skyU['rayleigh'].value = 0.3 + 0.6 * (1 - dl.sunFactor)
+    skyU['mieCoefficient'].value = 0.003 + 0.008 * (1 - dl.sunFactor)
+    skyU['mieDirectionalG'].value = 0.75
+  }
+  scene.fog.color.copy(dl.bgColor)
+  ambientLight.color.set(0xfaf0d8)
+  ambientLight.intensity = 0.85 * dl.ambFactor
+  hemiLight.color.set(0x88ccff)
+  hemiLight.groundColor.set(0xffddaa)
+  hemiLight.intensity = 0.65 * dl.ambFactor
+  sunLight.color.copy(dl.sunColor)
+  sunLight.intensity = BEACH_CONFIG.sunIntensity * 0.7 * dl.sunFactor
+  renderer.toneMappingExposure = 0.6 * dl.exposure
+  if (moon) { moon.mesh.visible = dl.moonVisible; moon.light.visible = dl.moonVisible }
+  if (water) {
+    const dayWater = new THREE.Color(BEACH_CONFIG.waterColor)
+    const nightWater = new THREE.Color(0x001828)
+    water.material.uniforms['waterColor'].value.copy(dayWater.lerp(nightWater, 1 - dl.sunFactor))
+    const daySunW = new THREE.Color(BEACH_CONFIG.sunWaterColor)
+    const nightSunW = new THREE.Color(0x334466)
+    water.material.uniforms['sunColor'].value.copy(daySunW.lerp(nightSunW, 1 - dl.sunFactor))
   }
 
   // —— 晴雨 ——
@@ -237,11 +225,13 @@ export function initBeach(opts = {}) {
   createBoats()
   createClouds()
   createRainParticles()
+  setupChairSpots()
   moon = createMoon(scene)
   createPlayer()
-  // 鸟控制器
-  birdController = createBirdController({
+  // 车辆控制器
+  carController = createCarController({
     scene,
+    world,
     getPlayerMesh: () => playerMesh,
     getPlayerBody: () => playerBody,
     getTerrainHeight,
@@ -252,7 +242,9 @@ export function initBeach(opts = {}) {
     getCameraPitch: () => cameraPitch,
     playerKeys
   })
-  birdController.create()
+  carController.create()
+  // 播放沙滩地图背景音乐（切图时 musicManager 自动切换曲目）
+  playMusic('assets/Emil Negri - Sand Time.ogg')
   // 注册环境 GUI，沙滩支持 晴/雨
   setActiveScene(applyEnvironment, ['sunny', 'rainy'])
   animate()
@@ -299,7 +291,19 @@ export function disposeBeach() {
   isFishing = false
   fishingRod = null
   if (fishingBuoy) { scene.remove(fishingBuoy); fishingBuoy = null }
-  if (birdController) { birdController.dispose(); birdController = null }
+  // 清理沙滩椅系统
+  chairSpots.forEach((s) => { if (s.marker) scene.remove(s.marker) })
+  chairSpots = []
+  if (beachChair) { scene.remove(beachChair.group); beachChair = null }
+  chairParts = false
+  if (chairBackpack && playerMesh) playerMesh.remove(chairBackpack)
+  chairBackpack = null
+  onChair = false
+  chairSeatRef = null
+  hideHint()
+  if (carController) { carController.dispose(); carController = null }
+  // 停止沙滩地图背景音乐（下一张地图的 init 会播放自己的曲目）
+  stopMusic()
   console.log('🧹 沙滩场景已卸载')
 }
 // ===================== 初始化 Three 渲染 =====================
@@ -355,16 +359,38 @@ function initThree() {
       isOrbitMode = !isOrbitMode
       controls.enabled = isOrbitMode
     }
-    // 按 E：钓鱼/收竿 或 靠近鸟时切换人物与鸟
-   if (k === 'e') {
-      if (birdController && birdController.isBirdMode()) {
-        birdController.toggleMode()
+    // 按 E：坐椅钓鱼/收竿/钓鱼 或 靠近车辆时切换人物与车辆
+    if (k === 'e') {
+      if (carController && carController.isCarMode()) {
+        carController.toggleMode()
+      } else if (onChair) {
+        // 坐在沙滩椅上：E 键切换钓鱼/收竿
+        if (isFishing) {
+          stopFishing()
+        } else {
+          startFishing()
+        }
       } else if (isFishing) {
         stopFishing()
+      } else if (beachChair && nearChairSeat()) {
+        sitOnChair()
       } else if (isNearWater()) {
         startFishing()
-      } else if (birdController && birdController.isNearBird()) {
-        birdController.toggleMode()
+      } else if (carController && carController.isNearCar()) {
+        carController.toggleMode()
+      }
+    }
+    // 按 F：靠近车辆取出沙滩椅零件 / 在海边处搭建沙滩椅
+    if (k === 'f') {
+      if (carController && carController.isCarMode()) return
+      if (!chairParts && !beachChair && carController && carController.isNearCar()) {
+        chairParts = true
+        chairBackpack = createBackpack('chair')
+        playerMesh.add(chairBackpack)
+        console.log('🎒 取出沙滩椅零件，去海边搭建吧')
+      } else if (chairParts && !beachChair) {
+        const spot = findNearestChairSpot()
+        if (spot) buildChair(spot)
       }
     }
   }, { signal })
@@ -1020,6 +1046,8 @@ function createPlayer() {
     material: new CANNON.Material({ friction: 0.0 })
   })
   playerBody.addShape(new CANNON.Sphere(0.4))
+  playerBody.collisionFilterGroup = 4 // 玩家专用碰撞组：与车辆（组2）互不碰撞
+  playerBody.collisionFilterMask = -1 // 与静态障碍物（组1）正常碰撞
   playerBody.position.set(0, 2, 0)
   playerBody.linearDamping = 0.2
   playerBody.allowSleep = false
@@ -1138,6 +1166,19 @@ function updateBuoyPosition() {
 // ===================== 玩家移动 + 摄像机 =====================
 function updatePlayer(delta) {
   if (!playerBody || !playerMesh) return
+  // 坐在沙滩椅上：有移动输入自动起身，否则锁定在椅位
+  if (onChair) {
+    const wantMove = playerKeys.w || playerKeys.a || playerKeys.s || playerKeys.d
+    if (wantMove) {
+      standFromChair()
+    } else {
+      playerBody.velocity.set(0, 0, 0)
+      playerBody.position.set(chairSeatRef.x, chairSeatRef.y, chairSeatRef.z)
+      playerMesh.position.copy(playerBody.position)
+      playerMesh.position.y += 0.2
+      return
+    }
+  }
   const moveSpeed = playerKeys.shift ? 14 : 8
   const forward = new THREE.Vector3(-Math.sin(cameraYaw), 0, -Math.cos(cameraYaw))
   const right = new THREE.Vector3(Math.cos(cameraYaw), 0, -Math.sin(cameraYaw))
@@ -1227,10 +1268,13 @@ function animate() {
   animationFrameId = requestAnimationFrame(animate)
   const delta = Math.min(clock.getDelta(), 0.016)
   world.step(delta)
+  if (carController) carController.updateDoors(delta)
+  updateHints()
+  updateChairSystem(delta)
   if (controls.enabled) {
     controls.update()
-  } else if (birdController && birdController.isBirdMode()) {
-    birdController.update(delta)
+  } else if (carController && carController.isCarMode()) {
+    carController.update(delta)
   } else {
     updatePlayer(delta)
   }
@@ -1257,4 +1301,124 @@ function animate() {
     })
   })
   composer.render()
+}
+
+// ===================== 沙滩：沙滩椅搭建系统 =====================
+function setupChairSpots() {
+  chairSpots = findClearSpots(sceneBodyList, {
+    count: 2,
+    radius: 118,
+    minClear: 6,
+    flatness: 0.3,
+    terrainHeight: getTerrainHeight,
+    terrainFilter: (h) => h > -0.58 && h < -0.38 // 海边近水线处的沙滩（浮标落在水面）
+  })
+  // 找不到时回退到近水线方向的固定点
+  if (chairSpots.length === 0) {
+    for (const ang of [0.6, -1.2]) {
+      const x = Math.cos(ang) * 105
+      const z = Math.sin(ang) * 105
+      chairSpots.push({ x, z, y: getTerrainHeight(x, z) })
+    }
+  }
+  chairSpots.forEach((s) => {
+    const marker = createSpotMarker(0xffb36b)
+    marker.position.set(s.x, s.y, s.z)
+    scene.add(marker)
+    s.marker = marker
+  })
+  console.log('🏖️ 海边搭建点就绪', chairSpots.map((s) => [s.x, s.z].join(',')).join(' / '))
+}
+
+function findNearestChairSpot() {
+  if (!playerBody) return null
+  const px = playerBody.position.x
+  const pz = playerBody.position.z
+  let best = null
+  let bestD = 3.5 * 3.5
+  for (const s of chairSpots) {
+    const dx = s.x - px
+    const dz = s.z - pz
+    const d = dx * dx + dz * dz
+    if (d < bestD) { bestD = d; best = s }
+  }
+  return best
+}
+
+function buildChair(spot) {
+  if (!scene) return
+  const c = createBeachChairModel()
+  c.position.set(spot.x, spot.y, spot.z)
+  scene.add(c)
+  beachChair = {
+    group: c,
+    seatX: spot.x,
+    seatY: spot.y + c.userData.seat.y,
+    seatZ: spot.z
+  }
+  if (chairBackpack && playerMesh) playerMesh.remove(chairBackpack)
+  chairBackpack = null
+  chairParts = false
+  if (spot.marker) { scene.remove(spot.marker); spot.marker = null }
+  console.log('🪑 沙滩椅搭建完成！')
+}
+
+function nearChairSeat() {
+  if (!beachChair || !playerBody) return false
+  const px = playerBody.position.x
+  const pz = playerBody.position.z
+  const dx = beachChair.seatX - px
+  const dz = beachChair.seatZ - pz
+  return dx * dx + dz * dz < 3.2 * 3.2
+}
+
+function sitOnChair() {
+  if (!beachChair) return
+  onChair = true
+  chairSeatRef = { x: beachChair.seatX, y: beachChair.seatY, z: beachChair.seatZ }
+  playerBody.position.set(chairSeatRef.x, chairSeatRef.y, chairSeatRef.z)
+  playerBody.velocity.set(0, 0, 0)
+  playerMesh.rotation.y = cameraYaw
+  const limbs = playerMesh.userData
+  if (limbs) {
+    limbs.legL.rotation.x = -1.1
+    limbs.legR.rotation.x = -1.1
+    limbs.armL.rotation.x = 0.5
+    limbs.armR.rotation.x = 0.5
+  }
+  console.log('🪑 坐上沙滩椅（E 钓鱼 / WASD 起身）')
+}
+
+function standFromChair() {
+  if (isFishing) stopFishing()
+  onChair = false
+  chairSeatRef = null
+  const limbs = playerMesh.userData
+  if (limbs) {
+    limbs.legL.rotation.x = 0
+    limbs.legR.rotation.x = 0
+    limbs.armL.rotation.x = 0
+    limbs.armR.rotation.x = 0
+  }
+}
+
+function updateChairSystem(delta) {
+  chairSpots.forEach((s) => { if (s.marker) updateMarkerPulse(s.marker, delta) })
+}
+
+function updateHints() {
+  if (!playerBody || !playerMesh) return
+  if (carController && carController.isCarMode()) { hideHint(); return }
+  const lines = []
+  if (onChair) {
+    lines.push({ key: 'E', text: isFishing ? '收竿' : '开始钓鱼' })
+    lines.push({ key: 'WASD', text: '起身' })
+  } else {
+    if (!chairParts && !beachChair && carController && carController.isNearCar()) lines.push({ key: 'F', text: '取出沙滩椅零件' })
+    if (chairParts && !beachChair && findNearestChairSpot()) lines.push({ key: 'F', text: '搭建沙滩椅' })
+    if (beachChair && nearChairSeat()) lines.push({ key: 'E', text: '坐下' })
+    if (isNearWater()) lines.push({ key: 'E', text: '钓鱼' })
+    if (carController && carController.isNearCar()) lines.push({ key: 'E', text: '上车' })
+  }
+  if (lines.length) showHint(lines); else hideHint()
 }

@@ -4,8 +4,11 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import * as CANNON from 'cannon-es'
-import { setActiveScene, createMoon } from './envManager.js'
-import { createBirdController } from './birdController.js'
+import { setActiveScene, createMoon, computeDaylight } from './envManager.js'
+import { createCarController } from './carController.js'
+import { createSpotMarker, createSnowballMesh, createBuildSnowman, findClearSpots, updateMarkerPulse } from './buildables.js'
+import { showHint, hideHint } from './interactHud.js'
+import { playMusic, stopMusic } from './musicManager.js'
 
 // ===================== 雪原场景配置 =====================
 const SNOW_CONFIG = {
@@ -35,10 +38,14 @@ let playerMesh, playerBody
 let snowParticles, snowVelocities
 let snowGroundMesh
 let moon = null
-let birdController = null
+let carController = null
 const pineTrees = []
 const cloudGroups = []
 const campfires = []     // 篝火集合（含粒子）
+// —— 雪球 / 雪人系统 ——
+let snowSpots = []       // 空地标记点 {x, z, y, marker}
+let snowballs = []       // 已放置的雪球 [{mesh, spot, r}]
+let snowmanBuilt = false // 是否已合成雪人
 const mountains = []     // 雪山集合
 const sceneBodyList = []
 let animationFrameId = null
@@ -90,36 +97,22 @@ const snowgroundNormalDXTex2 = createTex('Snow012_1K-JPG/Snow012_1K-JPG_NormalDX
 // ===================== 环境应用（昼夜 / 晴雪） =====================
 function applyEnvironment(state) {
   if (!scene || !renderer) return
-  const isNight = state.time === 'night'
+  const dl = computeDaylight(state.timeProgress)
   const isSnowy = state.weather === 'snowy'
 
-  // —— 昼夜 ——
-  if (isNight) {
-    scene.background = new THREE.Color(0x0a1020)
-    scene.fog.color.set(0x0a1020)
-    ambientLight.color.set(0x334466)
-    ambientLight.intensity = 0.3
-    hemiLight.color.set(0x334466)
-    hemiLight.groundColor.set(0x1a2030)
-    hemiLight.intensity = 0.28
-    sunLight.color.set(0x6688bb)
-    sunLight.intensity = 0.22
-    renderer.toneMappingExposure = 0.5
-    // 开启月亮发光 + 月光照明
-    if (moon) { moon.mesh.visible = true; moon.light.visible = true }
-  } else {
-    scene.background = new THREE.Color(0xb8c4d0)
-    scene.fog.color.set(SNOW_CONFIG.fogColor)
-    ambientLight.color.set(0xc8d8e8)
-    ambientLight.intensity = 0.7
-    hemiLight.color.set(0xa8b8c8)
-    hemiLight.groundColor.set(0xf0f0f5)
-    hemiLight.intensity = 0.6
-    sunLight.color.set(SNOW_CONFIG.sunColor)
-    sunLight.intensity = SNOW_CONFIG.sunIntensity
-    renderer.toneMappingExposure = 1.15
-    if (moon) { moon.mesh.visible = false; moon.light.visible = false }
-  }
+  // —— 自动昼夜：日出/白天/日落/黑夜连续插值 ——
+  scene.background.copy(dl.bgColor)
+  scene.fog.color.copy(dl.bgColor)
+  ambientLight.color.set(0xc8d8e8)
+  ambientLight.intensity = 0.7 * dl.ambFactor
+  hemiLight.color.set(0xa8b8c8)
+  hemiLight.groundColor.set(0xf0f0f5)
+  hemiLight.intensity = 0.6 * dl.ambFactor
+  sunLight.color.copy(dl.sunColor)
+  sunLight.intensity = SNOW_CONFIG.sunIntensity * dl.sunFactor
+  renderer.toneMappingExposure = 1.15 * dl.exposure
+  // 月亮：夜间可见发光 + 月光照明
+  if (moon) { moon.mesh.visible = dl.moonVisible; moon.light.visible = dl.moonVisible }
 
   // —— 晴雪 ——
   if (isSnowy) {
@@ -147,13 +140,15 @@ export function initSnow(opts = {}) {
   createIgloos()
   createMountains()
   createCampfires()
+  setupSnowSpots()
   createClouds()
   createSnowParticles()
   moon = createMoon(scene)
   createPlayer()
-  // 鸟控制器
-  birdController = createBirdController({
+  // 车辆控制器
+  carController = createCarController({
     scene,
+    world,
     getPlayerMesh: () => playerMesh,
     getPlayerBody: () => playerBody,
     getTerrainHeight,
@@ -164,7 +159,9 @@ export function initSnow(opts = {}) {
     getCameraPitch: () => cameraPitch,
     playerKeys
   })
-  birdController.create()
+  carController.create()
+  // 播放雪地地图背景音乐（切图时 musicManager 自动切换曲目）
+  playMusic('assets/Amine Ayad - White Garden.ogg')
   // 注册环境 GUI，雪原支持 晴/雪
   setActiveScene(applyEnvironment, ['sunny', 'snowy'])
   animate()
@@ -193,12 +190,21 @@ export function disposeSnow() {
   pineTrees.length = 0
   cloudGroups.length = 0
   campfires.length = 0
+  // 清理雪球/雪人系统
+  snowSpots.forEach((s) => { if (s.marker) scene.remove(s.marker) })
+  snowSpots = []
+  snowballs.forEach((b) => scene.remove(b.mesh))
+  snowballs = []
+  snowmanBuilt = false
+  hideHint()
   mountains.length = 0
   sceneBodyList.length = 0
   snowParticles = null
   snowVelocities = null
   moon = null
-  if (birdController) { birdController.dispose(); birdController = null }
+  if (carController) { carController.dispose(); carController = null }
+  // 停止雪地地图背景音乐（下一张地图的 init 会播放自己的曲目）
+  stopMusic()
   console.log('🧹 雪原场景已卸载')
 }
 
@@ -261,18 +267,25 @@ function initThree() {
       isOrbitMode = !isOrbitMode
       controls.enabled = isOrbitMode
     }
-    // 按 E：点燃/熄灭篝火 或 靠近鸟时切换人物与鸟
+    // 按 E：点燃/熄灭篝火 或 靠近车辆时切换人物与车辆
     if (k === 'e') {
-      if (birdController && birdController.isBirdMode()) {
-        birdController.toggleMode()
+      if (carController && carController.isCarMode()) {
+        carController.toggleMode()
       } else {
         const camp = findNearestCampfire()
         if (camp) {
           toggleCampfire(camp)
-        } else if (birdController && birdController.isNearBird()) {
-          birdController.toggleMode()
+        } else if (carController && carController.isNearCar()) {
+          carController.toggleMode()
         }
       }
+    }
+    // 按 F：在空地处滚雪球（叠满三个雪球自动生成雪人）
+    if (k === 'f') {
+      if (carController && carController.isCarMode()) return
+      if (snowmanBuilt) return
+      const spot = findNearestSnowSpot()
+      if (spot) rollSnowball(spot)
     }
   }, { signal })
   window.addEventListener('keyup', (e) => {
@@ -1432,6 +1445,8 @@ function createPlayer() {
     material: new CANNON.Material({ friction: 0.0 })
   })
   playerBody.addShape(new CANNON.Sphere(0.4))
+  playerBody.collisionFilterGroup = 4 // 玩家专用碰撞组：与车辆（组2）互不碰撞
+  playerBody.collisionFilterMask = -1 // 与静态障碍物（组1）正常碰撞
   playerBody.position.set(0, 2, 0)
   playerBody.linearDamping = 0.2
   playerBody.allowSleep = false
@@ -1537,10 +1552,13 @@ function animate() {
   const delta = Math.min(clock.getDelta(), 0.016)
   world.step(delta)
 
+  if (carController) carController.updateDoors(delta)
+  updateHints()
+  updateSnowSystem(delta)
   if (controls.enabled) {
     controls.update()
-  } else if (birdController && birdController.isBirdMode()) {
-    birdController.update(delta)
+  } else if (carController && carController.isCarMode()) {
+    carController.update(delta)
   } else {
     updatePlayer(delta)
   }
@@ -1568,4 +1586,102 @@ function animate() {
   })
 
   composer.render()
+}
+
+// ===================== 雪原：滚雪球 / 雪人系统 =====================
+const SNOWBALL_R = [0.55, 0.78, 1.05]  // 三个雪球的半径（依次变大）
+const SNOWBALL_Y = [0.55, 1.5, 2.6]    // 三个雪球的球心高度（叠放）
+
+function setupSnowSpots() {
+  snowSpots = findClearSpots(sceneBodyList, {
+    count: 2,
+    radius: 55,
+    minClear: 6,
+    flatness: 0.3,
+    terrainHeight: getTerrainHeight
+  })
+  // 额外避开篝火
+  snowSpots = snowSpots.filter((s) => campfires.every((c) => {
+    const dx = c.position.x - s.x
+    const dz = c.position.z - s.z
+    return dx * dx + dz * dz > 7 * 7
+  }))
+  if (snowSpots.length === 0) snowSpots.push({ x: 4, z: 12, y: getTerrainHeight(4, 12) })
+  snowSpots.forEach((s) => {
+    const marker = createSpotMarker(0xa5d8ff)
+    marker.position.set(s.x, s.y, s.z)
+    scene.add(marker)
+    s.marker = marker
+  })
+  console.log('❄️ 雪地空地就绪', snowSpots.map((s) => [s.x, s.z].join(',')).join(' / '))
+}
+
+function findNearestSnowSpot() {
+  if (!playerBody) return null
+  const px = playerBody.position.x
+  const pz = playerBody.position.z
+  let best = null
+  let bestD = 3.5 * 3.5
+  for (const s of snowSpots) {
+    const dx = s.x - px
+    const dz = s.z - pz
+    const d = dx * dx + dz * dz
+    if (d < bestD) { bestD = d; best = s }
+  }
+  return best
+}
+
+function rollSnowball(spot) {
+  const idx = snowballs.length
+  if (idx >= SNOWBALL_R.length) return
+  const r = SNOWBALL_R[idx]
+  const ball = createSnowballMesh(r)
+  ball.position.set(spot.x, spot.y + SNOWBALL_Y[idx], spot.z)
+  scene.add(ball)
+  ball.userData.pop = 0
+  snowballs.push({ mesh: ball, spot, r })
+  console.log('⛄ 第 ' + (idx + 1) + ' 个雪球滚好了')
+  if (snowballs.length >= SNOWBALL_R.length) {
+    buildSnowman(spot)
+  }
+}
+
+function buildSnowman(spot) {
+  snowballs.forEach((b) => scene.remove(b.mesh))
+  snowballs = []
+  const snowman = createBuildSnowman()
+  snowman.position.set(spot.x, spot.y, spot.z)
+  scene.add(snowman)
+  snowmanBuilt = true
+  if (spot.marker) { scene.remove(spot.marker); spot.marker = null }
+  console.log('⛄ 三个雪球叠成雪人！')
+}
+
+function updateSnowSystem(delta) {
+  snowSpots.forEach((s) => { if (s.marker) updateMarkerPulse(s.marker, delta) })
+  // 雪球弹出动画
+  for (const b of snowballs) {
+    if (b.mesh.userData.pop < 1) {
+      b.mesh.userData.pop = Math.min(1, b.mesh.userData.pop + delta * 3)
+      const k = 0.3 + 0.7 * b.mesh.userData.pop
+      b.mesh.scale.set(k, k, k)
+    }
+  }
+}
+
+function updateHints() {
+  if (!playerBody || !playerMesh) return
+  if (carController && carController.isCarMode()) { hideHint(); return }
+  const lines = []
+  if (!snowmanBuilt) {
+    const spot = findNearestSnowSpot()
+    if (spot) {
+      const n = snowballs.length
+      lines.push({ key: 'F', text: n === 0 ? '滚雪球' : '滚第 ' + (n + 1) + ' 个雪球（' + n + '/3）' })
+    }
+  }
+  const camp = findNearestCampfire()
+  if (camp) lines.push({ key: 'E', text: camp.userData.isLit ? '熄灭篝火' : '点燃篝火' })
+  if (carController && carController.isNearCar()) lines.push({ key: 'E', text: '上车' })
+  if (lines.length) showHint(lines); else hideHint()
 }

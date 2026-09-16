@@ -7,11 +7,14 @@ import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js'
 import * as CANNON from 'cannon-es'
 import { initBeach, disposeBeach } from './beachScene.js'
 import { initSnow, disposeSnow } from './snowScene.js'
-import { setActiveScene, createMoon } from './envManager.js'
-import { createBirdController } from './birdController.js'
+import { setActiveScene, createMoon, computeDaylight } from './envManager.js'
+import { createCarController } from './carController.js'
+import { createBackpack, createSpotMarker, createTentModel, findClearSpots, updateMarkerPulse } from './buildables.js'
+import { showHint, hideHint } from './interactHud.js'
+import { playMusic, stopMusic } from './musicManager.js'
 
 // ===================== 全局变量 =====================
-let scene, camera, renderer, controls, clock
+let scene, camera, renderer, controls, timer
 let world, composer, leafParticles
 let grassMesh, grassVelocities
 const sceneMeshList = []
@@ -29,9 +32,15 @@ let cameraYaw = 0
 let cameraPitch = 0.25
 let isOrbitMode = false
 // 鸟（可骑乘切换）
-let birdController = null
+let carController = null
 // 坐下交互
 const sitTargets = []  // 可坐目标：{x, z, y}
+// —— 帐篷搭建系统 ——
+let tentParts = false          // 是否已取出帐篷零件
+let tentBackpack = null        // 背上的帐篷背包
+let tentSpots = []             // 空地标记点 {x, z, y, marker}
+let tent = null                // 已搭建的帐篷 {group, seatX, seatY, seatZ}
+let inTent = false             // 玩家是否坐入帐篷
 let isSitting = false
 let sitTargetRef = null
 // 场景切换支持
@@ -77,7 +86,9 @@ const FOREST_CONFIG = {
   sunIntensity: 2.0
 }
 
-// ===================== 纹理加载工具 =====================
+// （背景音乐已抽离至 musicManager.js，由 initForest / disposeForest 调用切换曲目）
+
+// ===================== 纹理加载工具 =====================// ===================== 纹理加载工具 =====================
 function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
   const tex = textureLoader.load(
     `texture/${path}`,
@@ -94,6 +105,9 @@ function createTex(path, repeatX = 20, repeatZ = 20, isNormalDX = false) {
     }
     if (isNormalDX) {
       tex.colorSpace = THREE.NoColorSpace
+    } else if (/Color/i.test(path)) {
+      // 颜色贴图标记为 sRGB，配合 renderer.outputColorSpace 还原正确色彩
+      tex.colorSpace = THREE.SRGBColorSpace
     }
   }
   return tex
@@ -118,8 +132,7 @@ const texture2 = leafColorTex.load(
   (err) => console.error("树叶贴图加载失败：", err)
 );
 
-// 云朵、镜头光晕在线贴图（无需本地资源）
-const cloudTex = textureLoader.load('https://threejs.org/examples/textures/lensflare/cloud.png')
+// 镜头光晕在线贴图（无需本地资源）
 const flareTex0 = textureLoader.load('https://threejs.org/examples/textures/lensflare/lensflare0.png')
 const flareTex1 = textureLoader.load('https://threejs.org/examples/textures/lensflare/lensflare1.png')
 
@@ -143,7 +156,7 @@ function initThree() {
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.shadowMap.type = THREE.PCFShadowMap
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.3
@@ -152,7 +165,7 @@ function initThree() {
   controls.enableDamping = true
   controls.dampingFactor = 0.05
   controls.enabled = false // 默认使用第三人称跟随，OrbitControls 备用
-  clock = new THREE.Clock()
+  timer = new THREE.Timer()
 
   // 使用 AbortController 统一管理事件监听，便于场景切换时清理
   eventAbortController = new AbortController()
@@ -192,19 +205,40 @@ function initThree() {
       isOrbitMode = !isOrbitMode
       controls.enabled = isOrbitMode
     }
-    // 按 E：坐下/起身 或 靠近鸟时切换人物与鸟
+    // 按 E：坐入帐篷/坐下/起身 或 靠近车辆时切换人物与车辆
     if (k === 'e') {
-      if (birdController && birdController.isBirdMode()) {
-        birdController.toggleMode()
+      if (carController && carController.isCarMode()) {
+        carController.toggleMode()
+      } else if (inTent) {
+        inTent = false
+        standUp()
       } else if (isSitting) {
         standUp()
       } else {
-        const target = findNearestSitTarget()
-        if (target) {
-          sitDown(target)
-        } else if (birdController && birdController.isNearBird()) {
-          birdController.toggleMode()
+        const tentTarget = findTentSeat()
+        if (tentTarget) {
+          sitInTent(tentTarget)
+        } else {
+          const target = findNearestSitTarget()
+          if (target) {
+            sitDown(target)
+          } else if (carController && carController.isNearCar()) {
+            carController.toggleMode()
+          }
         }
+      }
+    }
+    // 按 F：靠近车辆取出帐篷零件 / 在空地处搭建帐篷
+    if (k === 'f') {
+      if (carController && carController.isCarMode()) return
+      if (!tentParts && !tent && carController && carController.isNearCar()) {
+        tentParts = true
+        tentBackpack = createBackpack('tent')
+        playerMesh.add(tentBackpack)
+        console.log('🎒 取出帐篷零件，去空地搭建吧')
+      } else if (tentParts && !tent) {
+        const spot = findNearestTentSpot()
+        if (spot) buildTent(spot)
       }
     }
   }, { signal })
@@ -217,7 +251,7 @@ function initThree() {
     if (k === 'shift') playerKeys.shift = false
   }, { signal })
 
-  // 冷调环境光，模拟晴天漫反射
+  // 冷调环境光，模拟晴天漫反射  // 冷调环境光，模拟晴天漫反射
   ambientLight = new THREE.AmbientLight(0xf0f8ff, 0.55)
   scene.add(ambientLight)
 
@@ -1010,8 +1044,7 @@ function createMountainRange(centerX, centerZ, rangeAngle, rangeLength) {
       map: rockColorTex2,
       roughnessMap: rockRoughTex2,
       normalMap: rockNormalDXTex2,
-      normalScale: new THREE.Vector2(0.5, 0.5),
-      
+      normalScale: new THREE.Vector2(0.5, 0.5)
     })
 
     const peak = new THREE.Mesh(geo, mat)
@@ -1038,7 +1071,7 @@ function createLeafParticles() {
     opacity: 0.7
   })
   const count = 120
-  const instMesh = new THREE.InstancedMesh(leafGeo, leafMat)
+  const instMesh = new THREE.InstancedMesh(leafGeo, leafMat, count)
   const dummy = new THREE.Object3D()
   const velocityList = []
   for (let i = 0; i < count; i++) {
@@ -1146,12 +1179,16 @@ function buildForest() {
 // ===================== 渲染循环（云朵移动+风力） =====================
 function animate() {
   animationFrameId = requestAnimationFrame(animate)
-  const delta = Math.min(clock.getDelta(), 0.016)
+  timer.update()
+  const delta = Math.min(timer.getDelta(), 0.016)
   world.step(delta)
+  if (carController) carController.updateDoors(delta)
+  updateHints()
+  updateTentSystem(delta)
   if (controls.enabled) {
     controls.update()
-  } else if (birdController && birdController.isBirdMode()) {
-    birdController.update(delta)
+  } else if (carController && carController.isCarMode()) {
+    carController.update(delta)
   } else {
     updatePlayer(delta)
   }
@@ -1312,6 +1349,8 @@ function createPlayer() {
     material: new CANNON.Material({ friction: 0.0 })
   })
   playerBody.addShape(new CANNON.Sphere(0.4))
+  playerBody.collisionFilterGroup = 4 // 玩家专用碰撞组：与车辆（组2）互不碰撞
+  playerBody.collisionFilterMask = -1 // 与静态障碍物（组1）正常碰撞
   playerBody.position.set(0, 2, 20)
   playerBody.linearDamping = 0.2 // 低阻尼，跑动有惯性
   playerBody.allowSleep = false // 不休眠，随时响应输入
@@ -1529,32 +1568,20 @@ function updateRainParticles() {
 // ===================== 环境应用（昼夜 / 晴雨） =====================
 function applyEnvironment(state) {
   if (!scene || !renderer) return
-  const isNight = state.time === 'night'
+  const dl = computeDaylight(state.timeProgress)
   const isRainy = state.weather === 'rainy'
 
-  // —— 昼夜 ——
-  if (isNight) {
-    scene.background = new THREE.Color(0x0b1226)
-    scene.fog.color.set(0x0b1226)
-    ambientLight.color.set(0x445577)
-    ambientLight.intensity = 0.28
-    sunLight.color.set(0x6688cc)
-    sunLight.intensity = 0.25
-    renderer.toneMappingExposure = 0.55
-    if (sunLensflare) sunLensflare.visible = false
-    // 开启月亮发光 + 月光照明
-    if (moon) { moon.mesh.visible = true; moon.light.visible = true }
-  } else {
-    scene.background = new THREE.Color(0x8bb8d8)
-    scene.fog.color.set(FOREST_CONFIG.fogColor)
-    ambientLight.color.set(0xf0f8ff)
-    ambientLight.intensity = 0.55
-    sunLight.color.set(FOREST_CONFIG.sunColor)
-    sunLight.intensity = FOREST_CONFIG.sunIntensity
-    renderer.toneMappingExposure = 1.3
-    if (sunLensflare) sunLensflare.visible = true
-    if (moon) { moon.mesh.visible = false; moon.light.visible = false }
-  }
+  // —— 自动昼夜：日出/白天/日落/黑夜连续插值 ——
+  scene.background.copy(dl.bgColor)
+  scene.fog.color.copy(dl.bgColor)
+  ambientLight.color.set(0xf0f8ff)
+  ambientLight.intensity = 0.55 * dl.ambFactor
+  sunLight.color.copy(dl.sunColor)
+  sunLight.intensity = FOREST_CONFIG.sunIntensity * dl.sunFactor
+  renderer.toneMappingExposure = 1.3 * dl.exposure
+  if (sunLensflare) sunLensflare.visible = dl.sunFactor > 0.25
+  // 月亮：夜间可见发光 + 月光照明
+  if (moon) { moon.mesh.visible = dl.moonVisible; moon.light.visible = dl.moonVisible }
 
   // —— 晴雨 ——
   if (isRainy) {
@@ -1579,7 +1606,7 @@ export function initForest(opts = {}) {
   isOrbitMode = false
   isSitting = false
   sitTargetRef = null
-  if (birdController) birdController.reset()
+  if (carController) carController.reset()
   // 重置按键状态
   playerKeys.w = playerKeys.a = playerKeys.s = playerKeys.d = playerKeys.shift = false
 
@@ -1588,13 +1615,15 @@ export function initForest(opts = {}) {
   initPostProcess()
   createGround()
   buildForest()
+  setupTentSpots()
   createLeafParticles()
   createRainParticles()
   moon = createMoon(scene)
   createPlayer()
-  // 鸟控制器（支持人物/鸟切换操控，可跨场景通行）
-  birdController = createBirdController({
+  // 车辆控制器（支持人物/车辆切换操控，可跨场景通行）
+  carController = createCarController({
     scene,
+    world,
     getPlayerMesh: () => playerMesh,
     getPlayerBody: () => playerBody,
     getTerrainHeight,
@@ -1605,8 +1634,10 @@ export function initForest(opts = {}) {
     getCameraPitch: () => cameraPitch,
     playerKeys
   })
-  birdController.create()
-  // 注册环境 GUI，森林支持 晴/雨
+  carController.create()
+  // 播放草地地图背景音乐（切图时 musicManager 自动切换曲目）
+  playMusic('assets/Felice Manzi - Patience.ogg')
+  // 注册环境 GUI，森林支持 晴/雨  // 注册环境 GUI，森林支持 晴/雨
   setActiveScene(applyEnvironment, ['sunny', 'rainy'])
   animate()
   console.log('🌲 森林场景已启动')
@@ -1643,9 +1674,20 @@ export function disposeForest() {
   leafParticles = null
   moon = null
   sitTargets.length = 0
+  // 清理帐篷系统
+  tentSpots.forEach((s) => { if (s.marker) scene.remove(s.marker) })
+  tentSpots = []
+  if (tent) { scene.remove(tent.group); tent = null }
+  tentParts = false
+  if (tentBackpack && playerMesh) playerMesh.remove(tentBackpack)
+  tentBackpack = null
+  inTent = false
+  hideHint()
   isSitting = false
   sitTargetRef = null
-  if (birdController) { birdController.dispose(); birdController = null }
+  if (carController) { carController.dispose(); carController = null }
+  // 停止草地地图背景音乐（下一张地图的 init 会播放自己的曲目）
+  stopMusic()
   console.log('🧹 森林场景已卸载')
 }
 
@@ -1663,6 +1705,106 @@ function teleportToSnow() {
 function teleportToForest() {
   disposeSnow()
   initForest({ onTeleport: teleportToBeach })
+}
+
+// ===================== 森林：帐篷搭建系统 =====================
+function setupTentSpots() {
+  tentSpots = findClearSpots(sceneBodyList, {
+    count: 2,
+    radius: 60,
+    minClear: 6,
+    flatness: 0.35,
+    terrainHeight: getTerrainHeight
+  })
+  // 找不到空地时回退到出生点附近
+  if (tentSpots.length === 0) tentSpots.push({ x: 4, z: 16, y: getTerrainHeight(4, 16) })
+  tentSpots.forEach((s) => {
+    const marker = createSpotMarker(0x66ccff)
+    marker.position.set(s.x, s.y, s.z)
+    scene.add(marker)
+    s.marker = marker
+  })
+  console.log('⛺ 空地标记就绪', tentSpots.map((s) => [s.x, s.z].join(',')).join(' / '))
+}
+
+function findNearestTentSpot() {
+  if (!playerBody) return null
+  const px = playerBody.position.x
+  const pz = playerBody.position.z
+  let best = null
+  let bestD = 3.5 * 3.5
+  for (const s of tentSpots) {
+    const dx = s.x - px
+    const dz = s.z - pz
+    const d = dx * dx + dz * dz
+    if (d < bestD) { bestD = d; best = s }
+  }
+  return best
+}
+
+function buildTent(spot) {
+  if (!scene) return
+  const t = createTentModel()
+  t.position.set(spot.x, spot.y, spot.z)
+  scene.add(t)
+  tent = {
+    group: t,
+    seatX: spot.x,
+    seatY: spot.y + t.userData.seat.y,
+    seatZ: spot.z
+  }
+  // 移除背上的零件与空地标记
+  if (tentBackpack && playerMesh) playerMesh.remove(tentBackpack)
+  tentBackpack = null
+  tentParts = false
+  if (spot.marker) { scene.remove(spot.marker); spot.marker = null }
+  console.log('⛺ 帐篷搭建完成！')
+}
+
+function findTentSeat() {
+  if (!tent || !playerBody) return null
+  const px = playerBody.position.x
+  const pz = playerBody.position.z
+  const dx = tent.seatX - px
+  const dz = tent.seatZ - pz
+  return dx * dx + dz * dz < 3.2 * 3.2 ? tent : null
+}
+
+function sitInTent(t) {
+  inTent = true
+  isSitting = true
+  sitTargetRef = { x: t.seatX, y: t.seatY, z: t.seatZ }
+  playerBody.position.set(t.seatX, t.seatY, t.seatZ)
+  playerBody.velocity.set(0, 0, 0)
+  playerMesh.rotation.y = cameraYaw
+  const limbs = playerMesh.userData
+  if (limbs) {
+    limbs.legL.rotation.x = -1.3
+    limbs.legR.rotation.x = -1.3
+    limbs.armL.rotation.x = 0.6
+    limbs.armR.rotation.x = 0.6
+  }
+  console.log('⛺ 坐入帐篷')
+}
+
+function updateTentSystem(delta) {
+  tentSpots.forEach((s) => { if (s.marker) updateMarkerPulse(s.marker, delta) })
+}
+
+function updateHints() {
+  if (!playerBody || !playerMesh) return
+  if (carController && carController.isCarMode()) { hideHint(); return }
+  const lines = []
+  if (inTent || isSitting) {
+    lines.push({ key: 'E', text: '起身' })
+  } else {
+    if (!tentParts && !tent && carController && carController.isNearCar()) lines.push({ key: 'F', text: '取出帐篷零件' })
+    if (tentParts && !tent && findNearestTentSpot()) lines.push({ key: 'F', text: '搭建帐篷' })
+    if (tent && findTentSeat()) lines.push({ key: 'E', text: '坐入帐篷' })
+    if (findNearestSitTarget()) lines.push({ key: 'E', text: '坐下' })
+    if (carController && carController.isNearCar()) lines.push({ key: 'E', text: '上车' })
+  }
+  if (lines.length) showHint(lines); else hideHint()
 }
 
 // ===================== 入口：从森林场景启动 =====================
